@@ -3,11 +3,11 @@
 #  Synchronize with Google Gmail Contacts
 #  Based on GData Sample Codes
 #
-#   Developed by Cristiano Lazzari <crlazzari@gmail.com>
+#   Originally developed by Cristiano Lazzari <crlazzari@gmail.com>
 #   Date Nov 27, 2009
-#
-#
-#
+#   
+#   Modified by Daniel Mescheder
+#   Date Jan 20, 2012
 
 import sys
 import getopt
@@ -20,419 +20,160 @@ import gdata.contacts.service
 import string
 import os
 import gdata.data
+import re
+
+city_re = re.compile("([^,]+)(, [^ ]+)? ([^ ]+)")
+name_re = re.compile("^(.+?) ((?:von |van |de )?[^ ]+)$")
+image_dir = "%s/.bbdb-images" % os.path.expanduser("~")
 
 
-## 
-class ContactBBDBPhone():
-  def __init__(self):
-    self.location = ''
-    self.number   = ''
+def test(user, pw):
+  gd_client = create_client(user,pw)
+  for e in iter_feed(gd_client):
+    print format_entry(e)
 
-## 
-class ContactBBDBAddress():
-  def __init__(self):
-    self.location = ''
-    self.street1  = ''
-    self.street2  = ''
-    self.street3  = ''
-    self.zip      = ''
-    self.city     = ''
-    self.state    = ''
-    self.country  = ''
+def iter_feed(gd_client):
+  """
+  Iterate over a paginated feed.
+  """
+  feed = gd_client.GetContactsFeed()
+  while feed:
+    for entry in feed.entry:
+      yield entry
+    # Check whether there is another page and if yes
+    next_link = feed.GetNextLink()
+    feed = None
+    if next_link:
+      feed = gd_client.GetContactsFeed(uri=next_link.href)
 
-## 
-class ContactBBDBOther():
-  def __init__(self):
-    self.name = ''
-    self.val  = ''
-
-
-##
-class ContactBBDB():
-  def __init__(self):
-    self.name     = ''
-    self.title    = ''
-    self.nickname = ''
-    self.company  = ''
-    self.phones   = []
-    self.address  = []
-    self.emails   = []
-    self.website  = ''
-    self.notes    = ''
-    self.creation = ''
-    self.modified = ''
-    self.other    = []
-
-##
-class ContactsSync(object):
-  """ContactsSync object w/ operations in the Contacts feed."""
-
-  def __init__(self, email, password):
-    """Constructor for the ContactsSample object.
-    
+def create_client(email, password):
+  """
     Takes an email and password corresponding to a gmail account to
-    demonstrate the functionality of the Contacts feed.
+    initialize a Contacts feed.
     
     Args:
       email: [string] The e-mail address of the account to use for the sample.
       password: [string] The password corresponding to the account specified by
           the email parameter.    
-    """
-    self.gd_client = gdata.contacts.service.ContactsService()
-    self.gd_client.email = email
-    self.gd_client.password = password
-    self.gd_client.source = 'syncContacts'
-    self.gd_client.ProgrammaticLogin()
+  """
+  gd_client = gdata.contacts.service.ContactsService()
+  gd_client.email = email
+  gd_client.password = password
+  gd_client.source = 'syncContacts'
+  gd_client.ProgrammaticLogin()
+  return gd_client
 
-  def PrintFeed(self, feed):
-    """Prints out the contents of a feed to the console.
-   
-    Args:
-      feed: A gdata.contacts.ContactsFeed instance.
-    """
-    print '\n'
-    if not feed.entry:
-      print 'No entries in feed.\n'
-    while feed:
-      for i, entry in enumerate(feed.entry):
-         print '\n%s %s' % (i, entry.title.text)
-         if entry.content:
-           print '    %s' % (entry.content.text)
-         for email in entry.email:
-           if email.primary and email.primary == 'true':
-             print '    %s' % (email.address)
-      next = feed.GetNextLink()
-      feed = None
-      if next:
-        feed = self.gd_client.GetContactsFeed(next.href)
-  
-
-  ##
-  def getContactIdx(self, feed, _email):
-    """Find a Contact by the e-mail"""
-
-    if not feed.entry:
-      return -1
-
-    idx = 0;
-    while feed:
-       for i, entry in enumerate(feed.entry):
-         for email in entry.email:
-           if email.address == _email:
-             return idx  
-         idx = idx + 1
-       next = feed.GetNextLink()
-       feed = None
-       if next:
-          feed = self.gd_client.GetContactsFeed(next.href)
-
-    return -1
-
-
-  ##
-  def getContactFeedEntry(self, feed, _email):
-    """Find a Contact by the e-mail"""
-
-    if not feed.entry:
-      return None
-
-    while feed:
-       for i, entry in enumerate(feed.entry):
-         for email in entry.email:
-           if email.address == _email:
-             return entry
-       next = feed.GetNextLink()
-       feed = None
-       if next:
-          feed = self.gd_client.GetContactsFeed(next.href)
-
-    return None
-
-
-  ##
-  def formatAddress(self, _addr):
-     return "%s\n%s\n%s\n%s, %s\n%s, %s" % ( _addr.street1, _addr.street2, _addr.street3,
-	_addr.city, _addr.state, 
-	_addr.zip, _addr.country )
-
-  ##
-  def contacts2BBDB(self, feed):
-    
-    fname = "%s/.bbdb" % os.path.expanduser("~")
-
-    f = open(fname, 'w')
-    
+def contacts_to_bbdb(gd_client):
+  fname = "%s/.bbdb" % os.path.expanduser("~")
+  with open(fname, 'w') as f:
     f.write(';; -*-coding: utf-8-emacs;-*-\n')
     f.write(';;; file-version: 6\n')
     f.write(';;; user-fields: (title website department)\n')
+    for i, entry in enumerate(iter_feed(gd_client)):
+         f.write("%s\n" % format_entry(entry))
+         fetch_image(gd_client, entry)
 
-    while feed:
-       for i, entry in enumerate(feed.entry):
-         f.write('[')
-         
-         ename     = entry.title.text
+def fetch_image(gd_client, entry):
+  try:
+    photo = gd_client.GetPhoto(entry)
+  except gdata.service.RequestError:
+    return # photo not found
+  if photo is None:  return # Nothing to do here
+  with open("%s/%s.jpg" % (image_dir,entry.title.text), "w") as f:
+    f.write(photo)
 
-         enickname = 'nil'
-         if entry.nickname:
-           enickname = '"%s"' % entry.nickname.text
+def format_entry(entry):
+  name = format_name(entry)
+  company = format_company(entry)
+  mails = format_mails(entry)
+  address = format_address(entry)
+  phones = format_phones(entry)
+  notes = format_notes(entry)
+  return "[%s %s %s %s %s ( %s ) nil]" % (name, company, phones, address, mails, notes)
 
-         ecompany  = 'nil' 
-         if entry.organization:
-           if entry.organization.org_name and entry.organization.org_name.text:
-             ecompany = '"%s"' % entry.organization.org_name.text
-         
-         eemails = ''
-         for email in entry.email:
-           eemails = '%s "%s"' % ( eemails, email.address )
-
-         eaddress = '('
-         for address in entry.postal_address: 
-           adrtype = 'Other' 
-           if ( address.rel == gdata.contacts.REL_WORK ):
-             adrtype = 'Work'    
-           elif ( address.rel == gdata.contacts.REL_HOME ):
-             adrtype = 'Home'
-           adr = address.text.strip().split("\n")     
-           eaddress = '%s ["%s"' % ( eaddress, adrtype )
-           for j,addpt in  enumerate(adr):
-             if j == 0:
-               eaddress = '%s ["%s"]' % ( eaddress, addpt )
-             else:
-               eaddress = '%s "%s"' % ( eaddress, addpt )
-           eaddress = '%s ]' % eaddress
-         eaddress = '%s )' % eaddress
-         if eaddress == '( )':
-           eaddress = 'nil'
-
-         ephones = '('
-         for phone in entry.phone_number:    
-           phonetype = 'Other'      
-           if ( phone.rel == gdata.contacts.PHONE_WORK ):
-             phonetype = 'Work'    
-           elif ( phone.rel == gdata.contacts.PHONE_HOME ):
-             phonetype = 'Home'
-           elif ( phone.rel == gdata.contacts.PHONE_MOBILE ):
-             phonetype = 'Mobile'
-           ephones = '%s ["%s" "%s"]' % ( ephones, phonetype, phone.text )
-         ephones = '%s )' % ephones
-         if ephones == '( )':
-           ephones = 'nil'
-
-         emore = '' #'(creation-date . "2010-01-01") (timestamp . "2010-01-01")'
-         
-#         if entry.website:
-#           emore = '%s (website . "%s")' % ( emore, entry.website.text )
-
-         if entry.content and entry.content.text :
-           enotes = entry.content.text.strip().split("\n") 
-           emore = '%s (notes . "' % emore
-           for enote in enotes:
-               emore = '%s %s' % ( emore, enote )
-           emore = '%s")' % emore
-
-         if entry.organization:
-           if entry.organization.org_title and entry.organization.org_title.text:
-             emore = '%s (title . "%s")' % ( emore, entry.organization.org_title.text )
-
-#         for extended_property in entry.extended_property:
-#           if extended_property.value:
-#             value = extended_property.value
-#           else:
-#             value = extended_property.GetXmlBlobString()
-#           emore = '%s (%s . "%s")' % ( emore, extended_property.name, value )
-
-#         if entry.department and entry.department.text :
-#           emore = '%s (department . "%s")' % ( emore, entry.department.text )
-
-         str = '"%s" "" %s %s %s %s (%s ) (%s) nil' % ( ename, enickname, ecompany, ephones, eaddress, eemails, emore )
-#         str = '"%s" "" %s %s %s %s (%s ) () nil' % ( ename, enickname, ecompany, ephones, eaddress, eemails )
-         f.write( str );
-         
-         
-         f.write(']\n')
-         # end for
-
-       next = feed.GetNextLink()
-       feed = None
-       if next:
-          feed = self.gd_client.GetContactsFeed(next.href)
-
-
-    f.close()
-
-    return None
-    ## END contacts2BBDB
-
-  ##
-  def syncContact(self, feed, ctt):
-    """  """ 
-    
-    # cttidx = -1
-    csel = None
-    for _email in ctt.emails:
-       csel = self.getContactFeedEntry( feed, _email )
-       if csel != None:
-         break
-
-    # if cttidx > 0:
-#    csel = self.getContactFeedEntry( feed, _email )
-    if csel != None:
-      
-      print 'MSG: ', ctt.name, 'was found!!'
-
-      return None
-
+def format_name(entry):
+  firstname, lastname, nickname = "nil", "nil", "nil"
+  if (entry.title and entry.title.text):
+    match = name_re.match(entry.title.text)
+    if match:
+      firstname = '"%s"' % match.group(1)
+      lastname = '"%s"' % match.group(2)
     else:
-
-      return None
-
-      print 'MSG: ', ctt.name, ' was NOT found in the Gmail database. Contact will be inserted'
-      
-      new_contact = gdata.contacts.ContactEntry(title=atom.Title(text=ctt.name))
-
-#      new_contact.name = atom.Name(text=ctt.name)
-
-
-      if len(ctt.notes) > 0:
-         new_contact.content = atom.Content(text=ctt.notes)      
-      if len(ctt.nickname) > 0:
-        new_contact.nickname = gdata.contacts.Nickname(ctt.nickname)
-      if len(ctt.website) > 0:
-        new_contact.website.append(gdata.contacts.Website(href=ctt.website, label='Other'))
-
-      if len(ctt.company) > 0:
-        org = gdata.contacts.Organization(org_name = gdata.contacts.OrgName(ctt.company), org_title = gdata.contacts.OrgTitle(ctt.title))
-        new_contact.organization = org
-      
-      primaryemail = True
-      for _email in ctt.emails:
-         if primaryemail:
-           new_contact.email.append(gdata.contacts.Email(address=_email, 
-              primary='true', rel=gdata.contacts.REL_OTHER))
-         else:
-           new_contact.email.append(gdata.contacts.Email(address=_email, 
-              primary='false', rel=gdata.contacts.REL_OTHER))
-         primaryemail = False
-
-      for _addr in ctt.address:
-        rel = gdata.contacts.REL_OTHER
-        if _addr.location == 'Work':
-          rel = gdata.contacts.REL_WORK
-        elif _addr.location == 'Home':
-          rel = gdata.contacts.REL_HOME
-	new_contact.postal_address.append(gdata.contacts.PostalAddress(rel=rel, text=self.formatAddress(_addr)))
-
-
-      for _phone in ctt.phones:
-        rel = gdata.contacts.PHONE_OTHER
-        if _phone.location == 'Work':
-          rel = gdata.contacts.PHONE_WORK
-        elif _phone.location == 'Home':
-          rel = gdata.contacts.PHONE_HOME
-        elif _phone.location == 'Mobile':
-          rel = gdata.contacts.PHONE_MOBILE
-        new_contact.phone_number.append(gdata.contacts.PhoneNumber(rel=rel, text=_phone.number))
-
-      for _other in ctt.other:
-#	new_contact.extended_property.append(gdata.ExtendedProperty(name=_other.name, value=_other.val))
-	new_contact.user_defined_field.append(gdata.UserDefinedField(key=_other.name, value=_other.val))
-
-    entry = self.gd_client.CreateContact(new_contact)
-
-    if entry:
-      print 'MSG: Creation successful!'
-    else:
-      print 'MSG: Upload error.'
-
-    sys.exit(1)
+      firstname = '"%s"' % entry.title.text
     
-  ##
-  def Run(self):
-    """Bring Contacts and generate BBDB"""    
-      
-    # Bring Contacts
-    feed = self.gd_client.GetContactsFeed()
-    
-    self.contacts2BBDB( feed )
+  if (entry.nickname and entry.nickname.text):
+    nickname = '"%s"' % entry.nickname.text
+  return '%s %s %s' % (firstname, lastname, nickname)
 
-    return None
+def format_company(entry):
+  company  = 'nil' 
+  if entry.organization:
+    if entry.organization.org_name and entry.organization.org_name.text:
+      company = '"%s"' % entry.organization.org_name.text
+  return company
 
-#    self.PrintFeed(feed)
+def format_mails(entry):
+  emails = [ ('"%s"' % email.address) for email in entry.email]
+  if emails:
+    return "( %s )" % " ".join(emails)
+  else:
+    return "nil"
+
+def format_address(entry):
+  address = []
+  for a in entry.postal_address:
+    if ( a.rel == gdata.contacts.REL_WORK ): atype = 'Work'    
+    elif ( a.rel == gdata.contacts.REL_HOME ): atype = 'Home'
+    else: atype = 'Other'
+    adr = a.text.strip().split("\n")
+    if len(adr) < 3:
+      print "WARNING: address\n %s \n incomplete in record %s" % (a.text.strip(), entry.title.text)
+      continue
+    street = adr[0] # the first line is street and number
+    m = city_re.match(adr[1]) # the second line is city, state and postcode. see whether it matches:
+    if not m:
+      print "WARNING: unable to read address %s in record %s" % (adr[1], entry.title.text)
+      continue
+    city = m.group(1)
+    if m.group(2): state = m.group(2)[2:]
+    else: state = ""
+    postcode = m.group(3)
+    country = adr[2]
+    address.append('["%s" ("%s") "%s" "%s" "%s" "%s"]' % (atype, street, city, state, postcode, country))
+  if address:
+    return '( %s )' % " ".join(address)
+  else:
+    return "nil"
+
+def format_phones(entry):    
+  phones = []
+  for phone in entry.phone_number:    
+    if ( phone.rel == gdata.contacts.PHONE_WORK ): phonetype = 'Work'    
+    elif ( phone.rel == gdata.contacts.PHONE_HOME ): phonetype = 'Home'
+    elif ( phone.rel == gdata.contacts.PHONE_MOBILE ): phonetype = 'Mobile'
+    else: phonetype = 'Other'
+    phones.append('["%s" "%s"]' % (phonetype, phone.text))
+  if phones:
+    return "( %s )" % " ".join(phones)
+  else:
+    return "nil"
+
+def format_notes(entry):
+  notes = ""
+  if entry.content and entry.content.text :
+    notes_list = [('%s' % note) for note in entry.content.text.strip().split("\n")]
+    notes = '(notes . "%s" )' % " ".join(notes_list)
+  return notes
   
-#    sys.exit(1)	
 
-    ctt  = ''
-    addr = ''
-
-    while True:
-      input = raw_input()
-      input = input[0:].split(' ')
-
-
-      cmd  = input[0]
-      prop = string.join(input[1:])
-
-      propmf = prop[0:].split(' ')
-      prop1  = propmf[0]
-      prop2  = string.join(propmf[1:])
-
-      print 'MSG: READ ' , cmd, ' - ', prop
-
-      if cmd == 'BEGINCONTACT':
-          ctt = ContactBBDB()
-      elif cmd == 'NAME':
-          ctt.name = prop
-      elif cmd == 'NICKNAME':
-          ctt.nickname = prop
-      elif cmd == 'COMPANY':
-          ctt.company = prop
-      elif cmd == 'NOTES':
-          ctt.notes = prop
-      elif cmd == 'PHONE':
-          phone = ContactBBDBPhone()
-          phone.location = prop1
-          phone.number   = prop2
-          ctt.phones.append( phone )
-      elif cmd == 'EMAIL':
-          ctt.emails.append( prop )
-      elif cmd == 'ADDRLOCATION':
-          addr = ContactBBDBAddress()
-      elif cmd == 'ADDRSTREET1':
-          addr.street1 = prop
-      elif cmd == 'ADDRSTREET2':
-          addr.street2 = prop
-      elif cmd == 'ADDRSTREET3':
-          addr.street3 = prop
-      elif cmd == 'ADDRZIP':
-          addr.zip = prop
-      elif cmd == 'ADDRCITY':
-          addr.city = prop
-      elif cmd == 'ADDRSTATE':
-          addr.state = prop
-      elif cmd == 'ADDRCOUNTRY':
-          addr.country = prop
-          ctt.address.append( addr )
-      elif cmd == 'TITLE':
-          ctt.title = prop
-      elif cmd == 'WEBSITE':
-          ctt.website = prop
-      elif cmd == 'CREATION':
-          ctt.creation = prop
-      elif cmd == 'MODIFIED':
-          ctt.modified = prop
-      elif cmd == 'OTHER':
-          oth = ContactBBDBOther()
-          oth.name  = prop1
-          oth.value = prop2
-          ctt.other.append( oth )
-      elif cmd == 'ENDCONTACT':
-          self.syncContact( feed, ctt )
-      elif input == 'THISISTHEEND':
-          break
-
-      ## Start the creation of BBDB file
-      
-      
+def run(user, pw):
+  try:
+    gd_client = create_client(user, pw)
+    print 'MSG: Connection to Google OK!!!'
+  except gdata.service.BadAuthentication:
+    print 'Invalid user credentials given.'
+    return
+  contacts_to_bbdb(gd_client)  
       
 ##
 def main():
@@ -453,15 +194,9 @@ def main():
     elif option == '--pw':
       pw = arg
 
+  run(user,pw)
 
-  try:
-    sync = ContactsSync(user, pw)
-    print 'MSG: Connection to Google OK!!!'
-  except gdata.service.BadAuthentication:
-    print 'Invalid user credentials given.'
-    return
 
-  sync.Run()
 
 
 if __name__ == '__main__':
