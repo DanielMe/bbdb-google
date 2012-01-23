@@ -2,10 +2,10 @@
 
 ;; Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007  Free Software Foundation, Inc.
 
-;; Author:         Cristiano lazzari <crlazzari@gmail.com>
-;; Created:        Nov 2009
-;; Keywords:       google calendar
-;; Human-Keywords: google, calendar, diary
+;; Original Author:  Cristiano lazzari <crlazzari@gmail.com>
+;; Created:          Nov 2009
+
+;; Modified by: Daniel Mescheder (Jan 2012)
 
 ;; This file is part of GNU Emacs.
 
@@ -29,8 +29,8 @@
 ;;   The Google Contacts package aims at providing an implementation of an 
 ;; interface between BBDB and Google Gmail Contacts
 ;;
-;;  Dependences:
-;;  - bbdb
+;;  Dependencies:
+;;  - bbdb 
 ;;  - Python
 ;;  - Google GData (download in the google calendar website).
 ;;  
@@ -69,22 +69,15 @@
 
   (message "Downloading Google Contacts...")
 
-;  (iswitchb-buffer "*BBDB*")
-;  (switch-to-buffer "*BBDB*")
-;  (if (equal (current-buffer) "*BBDB*")
-;	  (kill-buffer nil))
-;  (switch-to-buffer ".bbdb")
-;  (if (equal (current-buffer) ".bbdb")
-;	  (kill-buffer nil))
-
   (if (get-buffer "*BBDB*") (kill-buffer "*BBDB*"))
   (if (get-buffer ".bbdb") (kill-buffer ".bbdb"))
+  (get-buffer-create "*bbdb-sync*")
+  (start-process-shell-command "bbdb-sync" "*bbdb-sync*" 
+                  (concat "python " 
+                          google-contacts-code-directory "/syncContacts.py "
+				          " --user " google-contacts-user
+				          " --pw " google-contacts-password))
 
-  (shell-command-to-string (concat "python " google-contacts-code-directory "/syncContacts.py "
-				   "--user " google-contacts-user " "
-				   "--pw " google-contacts-password ))  
-
-  (message "Downloading Google Contacts...Done")
   )
 
 ;;;;
